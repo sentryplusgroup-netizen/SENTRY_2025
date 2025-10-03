@@ -11,7 +11,7 @@ picam2.configure("preview")
 picam2.start()
 
 # Load custom YOLO11 model
-model = YOLO("sentry_yolo11_ncnn_model")
+model = YOLO("deer_detect_ncnn_model")
 
 while True:
     # Capture a frame from the camera
