@@ -2,7 +2,7 @@ import cv2
 from picamera2 import Picamera2
 from ultralytics import YOLO
 
-# Set up the camera with Picam
+# Camera setup
 picam2 = Picamera2()
 picam2.preview_configuration.main.size = (240, 240)
 picam2.preview_configuration.main.format = "RGB888"
@@ -10,39 +10,38 @@ picam2.preview_configuration.align()
 picam2.configure("preview")
 picam2.start()
 
-# Load YOLOv8
-model = YOLO("yolov8n.pt")
+# Load YOLOv8 custom model
+model = YOLO("deer_detect.pt")
+CONF_THRESHOLD = 0.5
 
 while True:
-    # Capture a frame from the camera
     frame = picam2.capture_array()
-    
-    # Run YOLO model on the captured frame and store the results
-    results = model(frame)
-    
-    # Output the visual detection data, we will draw this on our camera preview window
-    annotated_frame = results[0].plot()
-    
-    # Get inference time
-    inference_time = results[0].speed['inference']
-    fps = 1000 / inference_time  # Convert to milliseconds
-    text = f'FPS: {fps:.1f}'
+    results = model(frame, conf=CONF_THRESHOLD)[0]
 
-    # Define font and position
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    text_size = cv2.getTextSize(text, font, 1, 2)[0]
-    text_x = annotated_frame.shape[1] - text_size[0] - 10  # 10 pixels from the right
-    text_y = text_size[1] + 10  # 10 pixels from the top
+    boxes = results.boxes
+    if boxes is not None and len(boxes) > 0:
+        for box, conf, cls in zip(boxes.xyxy, boxes.conf, boxes.cls):
+            if conf < CONF_THRESHOLD:
+                continue
+            if int(cls) != 0:  # Only deer
+                continue
 
-    # Draw the text on the annotated frame
-    cv2.putText(annotated_frame, text, (text_x, text_y), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
+            x1, y1, x2, y2 = map(int, box)
+            # Filter out invalid or tiny boxes
+            if x2 - x1 <= 1 or y2 - y1 <= 1:
+                continue
 
-    # Display the resulting frame
-    cv2.imshow("Camera", annotated_frame)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, f'Deer {conf:.2f}', (x1, y1-5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-    # Exit the program if q is pressed
+    # Show FPS
+    fps = 1000 / results.speed['inference']
+    cv2.putText(frame, f'FPS: {fps:.1f}', (10, 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    cv2.imshow("Camera", frame)
     if cv2.waitKey(1) == ord("q"):
         break
 
-# Close all windows
 cv2.destroyAllWindows()
