@@ -19,7 +19,7 @@ while True:
     frame = picam2.capture_array()
 
     # Run YOLO model with a higher confidence threshold
-    results = model.predict(frame, imgsz=320, conf=0.7, task='detect')
+    results = model.predict(frame, imgsz=320, conf=0.80, task='track')
 
     # Annotated frame for display
     annotated_frame = frame.copy()
@@ -32,7 +32,7 @@ while True:
         for box in boxes:
             cls = int(box.cls[0])           # class index
             conf = float(box.conf[0])       # confidence
-            if cls == 0 and conf > 0.7:     # class 0 = deer
+            if cls == 0 and conf > 0.80:     # class 0 = deer
                 deer_detected = True
                 # Draw bounding box
                 xyxy = box.xyxy[0]
