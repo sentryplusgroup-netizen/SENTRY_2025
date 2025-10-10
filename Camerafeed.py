@@ -1,38 +1,35 @@
 import cv2
-from picamera2 import Picamera2
 from ultralytics import YOLO
 
-# --- Set up the camera ---
-picam2 = Picamera2()
-picam2.preview_configuration.main.size = (320, 320)
-picam2.preview_configuration.main.format = "RGB888"
-picam2.preview_configuration.align()
-picam2.configure("preview")
-picam2.start()
+# --- Set up the USB camera ---
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
 
 # --- Load YOLO model ---
 model = YOLO("best_ncnn_model")  # your trained deer model
 
 # --- Detection loop ---
 while True:
-    # Capture a frame from the camera
-    frame = picam2.capture_array()
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to grab frame from USB camera.")
+        break
 
     # Run YOLO model with a higher confidence threshold
     results = model.predict(frame, imgsz=320, conf=0.80, task='track')
 
     # Annotated frame for display
     annotated_frame = frame.copy()
-
-    deer_detected = False  # track if any valid deer found
+    deer_detected = False
 
     # Process detections
     for result in results:
         boxes = result.boxes
         for box in boxes:
-            cls = int(box.cls[0])           # class index
-            conf = float(box.conf[0])       # confidence
-            if cls == 0 and conf > 0.80:     # class 0 = deer
+            cls = int(box.cls[0])     # class index
+            conf = float(box.conf[0]) # confidence
+            if cls == 0 and conf > 0.80:  # class 0 = deer
                 deer_detected = True
                 # Draw bounding box
                 xyxy = box.xyxy[0]
@@ -61,8 +58,9 @@ while True:
     cv2.imshow("Camera", annotated_frame)
 
     # Exit on 'q'
-    if cv2.waitKey(1) == ord("q"):
+    if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
 # --- Cleanup ---
+cap.release()
 cv2.destroyAllWindows()
