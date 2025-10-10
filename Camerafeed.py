@@ -41,7 +41,7 @@ while True:
 
     # Print detection status
     if deer_detected:
-        print("🦌 DEER DETECTED!")
+        print("DEER DETECTED")
 
     # --- FPS display ---
     if len(results) > 0:
