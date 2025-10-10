@@ -1,47 +1,46 @@
 import cv2
-from picamera2 import Picamera2
 from ultralytics import YOLO
 
-# Camera setup
-picam2 = Picamera2()
-picam2.preview_configuration.main.size = (240, 240)
-picam2.preview_configuration.main.format = "RGB888"
-picam2.preview_configuration.align()
-picam2.configure("preview")
-picam2.start()
+# Open the USB camera
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
 
-# Load YOLOv8 custom model
-model = YOLO("deer_detect.pt")
-CONF_THRESHOLD = 0.5
+# Load YOLOv8 model
+model = YOLO("yolo11n_ncnn_model")
+
+# Define tracker type (optional, default is 'bytetrack.yaml')
+tracker = "bytetrack.yaml"
 
 while True:
-    frame = picam2.capture_array()
-    results = model(frame, conf=CONF_THRESHOLD)[0]
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to grab frame")
+        break
 
-    boxes = results.boxes
-    if boxes is not None and len(boxes) > 0:
-        for box, conf, cls in zip(boxes.xyxy, boxes.conf, boxes.cls):
-            if conf < CONF_THRESHOLD:
-                continue
-            if int(cls) != 0:  # Only deer
-                continue
+    # Run YOLO model with tracking
+    results = model.track(frame, persist=True, tracker=tracker)
 
-            x1, y1, x2, y2 = map(int, box)
-            # Filter out invalid or tiny boxes
-            if x2 - x1 <= 1 or y2 - y1 <= 1:
-                continue
+    # Annotate frame with bounding boxes and IDs
+    annotated_frame = results[0].plot()
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, f'Deer {conf:.2f}', (x1, y1-5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    # Get inference time
+    inference_time = results[0].speed['inference']
+    fps = 1000 / inference_time
+    text = f'FPS: {fps:.1f}'
 
-    # Show FPS
-    fps = 1000 / results.speed['inference']
-    cv2.putText(frame, f'FPS: {fps:.1f}', (10, 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    # Draw FPS on frame
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size = cv2.getTextSize(text, font, 1, 2)[0]
+    text_x = annotated_frame.shape[1] - text_size[0] - 10
+    text_y = text_size[1] + 10
+    cv2.putText(annotated_frame, text, (text_x, text_y), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
-    cv2.imshow("Camera", frame)
+    # Display annotated frame
+    cv2.imshow("USB Camera Tracking", annotated_frame)
+
     if cv2.waitKey(1) == ord("q"):
         break
 
-cv2.destroyAllWindows()
+cap.release()
+cv2.destroyAllWindows() 
