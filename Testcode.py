@@ -7,7 +7,7 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
 
 # Load YOLOv8 model
-model = YOLO("yolo11n_ncnn_model")
+model = YOLO("YOLOv8s_deerV2_ncnn_model")
 
 # Define tracker type (optional, default is 'bytetrack.yaml')
 tracker = "bytetrack.yaml"
