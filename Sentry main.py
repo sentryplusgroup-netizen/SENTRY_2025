@@ -3,42 +3,60 @@ from ultralytics import YOLO
 import time
 
 # --- Initialize USB camera ---
-cap = cv2.VideoCapture(0)  # 0 = default USB camera
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)   # Can be adjusted for performance
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
 
-# --- Load YOLOv8 model ---
-model = YOLO("deerdetect.pt")
+# --- Load YOLO model ---
+model = YOLO("yolo11n_custom_ncnn_model")
+
+# --- Tracking memory for ID stability ---
+id_counts = {}               # Track how many frames each ID has persisted
+STABLE_FRAMES = 5            # Confirm after 5 consistent frames
+CONF_THRESHOLD = 0.75        # Confidence required
 
 while True:
     start_time = time.time()
-
-    # Capture frame-by-frame
     ret, frame = cap.read()
     if not ret:
         print("❌ No frame captured.")
         break
 
-    # Run YOLO detection
-    results = model.track(frame, persist=True, tracker='botsort.yaml', conf=0.60, iou=0.05)
-    annotated_frame = results[0].plot()
+    # --- Run YOLO tracking ---
+    results = model.track(frame, persist=True, tracker='botsort.yaml', conf=CONF_THRESHOLD, iou=0.40)
+    annotated_frame = results[0].plot()  # Regular YOLO annotation only
 
-    # Calculate FPS
-    end_time = time.time()
-    fps = 1 / (end_time - start_time)
-    text = f'FPS: {fps:.1f}'
+    # --- Track active IDs this frame ---
+    active_ids = set()
 
-    # Draw FPS text
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    text_size = cv2.getTextSize(text, font, 1, 2)[0]
-    text_x = annotated_frame.shape[1] - text_size[0] - 10
-    text_y = text_size[1] + 10
-    cv2.putText(annotated_frame, text, (text_x, text_y), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
+    if results[0].boxes is not None:
+        for box in results[0].boxes:
+            conf = float(box.conf)
+            track_id = int(box.id.item()) if box.id is not None else None
 
-    # Display the resulting frame
+            # All detections are deer (single-class), just check confidence and valid ID
+            if conf >= CONF_THRESHOLD and track_id is not None:
+                active_ids.add(track_id)
+                id_counts[track_id] = id_counts.get(track_id, 0) + 1
+
+                # Internally you can still detect a "stable ID" for hardware triggers
+                # No extra annotation on frame needed
+                if id_counts[track_id] == STABLE_FRAMES:
+                    print(f"🦌 Deer confirmed internally (ID {track_id})")  # Optional debug
+
+    # --- Reset counters for IDs that disappeared ---
+    for tid in list(id_counts.keys()):
+        if tid not in active_ids:
+            id_counts[tid] = 0
+
+    # --- Display FPS ---
+    fps = 1 / (time.time() - start_time)
+    cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (10, 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    # --- Show frame ---
     cv2.imshow("USB Camera", annotated_frame)
 
-    # Exit on 'q'
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 

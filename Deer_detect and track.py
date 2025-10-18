@@ -3,7 +3,7 @@ from ultralytics import YOLO
 import time
 
 # --- Load your YOLO11 model ---
-model = YOLO("yolo11n_custom_ncnn_model")  # replace with your trained model path
+model = YOLO("model1_yolov8n_ncnn_model")  # replace with your trained model path
 
 # --- Open USB camera ---
 cap = cv2.VideoCapture(0)  # try 1 if multiple cameras
@@ -11,7 +11,7 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 256)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 256)
 
 # --- Detection persistence settings ---
-MIN_PERSISTENCE = 3  # minimum consecutive frames to confirm detection
+MIN_PERSISTENCE = 10 # minimum consecutive frames to confirm detection
 deer_detected_count = 0
 
 # Optional: minimum bounding box area to count as a deer
