@@ -3,7 +3,7 @@ from ultralytics import YOLO
 import time
 
 # --- Load your YOLO11 model ---
-model = YOLO("model1_yolov8n_ncnn_model")  # replace with your trained model path
+model = YOLO("Seg_yolov8n_model1.pt")  # replace with your trained model path
 
 # --- Open USB camera ---
 cap = cv2.VideoCapture(0)  # try 1 if multiple cameras
@@ -26,7 +26,7 @@ while True:
     start = time.time()
 
     # --- Run YOLO11 tracking ---
-    results = model.track(frame, persist=True, tracker='botsort.yaml', conf=0.70, imgsz=320)
+    results = model.track(frame, persist=True, tracker='botsort.yaml', task="segment", conf=0.70, imgsz=320)
 
     deer_detected_this_frame = False
 

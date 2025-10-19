@@ -1,46 +1,43 @@
 import cv2
 from ultralytics import YOLO
+import time
 
-# Open the USB camera
+# --- Initialize USB camera ---
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-# Load YOLOv8 model
-model = YOLO("YOLOv8s_deerV2_ncnn_model")
+# --- Load YOLO model ---
+model = YOLO("yolov8n.pt")
 
-# Define tracker type (optional, default is 'bytetrack.yaml')
-tracker = "bytetrack.yaml"
-
+# --- Start tracking loop ---
 while True:
+    start_time = time.time()
+
     ret, frame = cap.read()
     if not ret:
-        print("Failed to grab frame")
+        print("❌ No frame captured.")
         break
 
-    # Run YOLO model with tracking
-    results = model.track(frame, persist=True, tracker=tracker)
+    # Run YOLO tracking (not just detection)
+    results = model.track(frame, persist=True, tracker="bytetrack.yaml")
 
-    # Annotate frame with bounding boxes and IDs
+    # Draw annotated frame
     annotated_frame = results[0].plot()
 
-    # Get inference time
-    inference_time = results[0].speed['inference']
-    fps = 1000 / inference_time
+    # Compute total FPS
+    fps = 1 / (time.time() - start_time)
     text = f'FPS: {fps:.1f}'
+    cv2.putText(annotated_frame, text, (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
-    # Draw FPS on frame
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    text_size = cv2.getTextSize(text, font, 1, 2)[0]
-    text_x = annotated_frame.shape[1] - text_size[0] - 10
-    text_y = text_size[1] + 10
-    cv2.putText(annotated_frame, text, (text_x, text_y), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
-
-    # Display annotated frame
+    # Display
     cv2.imshow("USB Camera Tracking", annotated_frame)
 
-    if cv2.waitKey(1) == ord("q"):
+    # Press 'q' to quit
+    if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
+# --- Cleanup ---
 cap.release()
-cv2.destroyAllWindows() 
+cv2.destroyAllWindows()
