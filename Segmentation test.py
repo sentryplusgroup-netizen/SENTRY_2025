@@ -4,11 +4,11 @@ import time
 
 # --- Initialize USB camera ---
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 416)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 416)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
 
 # --- Load YOLO segmentation model ---
-model = YOLO("Seg_yolov8n_model1.pt")   # make sure this is a SEG model, not detection-only
+model = YOLO("Sentrymodel_seg1_ncnn_model")   # make sure this is a SEG model, not detection-only
 
 # --- Tracking memory for ID stability ---
 id_counts = {}
