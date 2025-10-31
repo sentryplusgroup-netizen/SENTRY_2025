@@ -3,19 +3,19 @@ from ultralytics import YOLO
 import time
 import serial
 
-# --- Initialize USB camera ---
+# Initialize USB camera 
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
 
-# --- Initialize serial connection to Arduino ---
+# Initialize serial connection to Arduino
 ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
 time.sleep(3)  # wait for the serial connection to initialize
 ser.reset_input_buffer()
 print("Serial connection established")
 
-# --- Load YOLO segmentation model ---
-model = YOLO("Sentrymodel_seg1_ncnn_model")   # make sure this is a SEG model, not detection-only
+# Load YOLO model
+model = YOLO("Sentrymodel_seg1_ncnn_model")  
 
 # Define variables for tracking stability
 id_counts = {}
@@ -29,8 +29,8 @@ while True:
         print("❌ No frame captured.")
         break
 
-    # --- Run YOLO segmentation + tracking ---
-    results = model.track(frame, persist=True, tracker='botsort.yaml', conf=Confidence, iou=0.50, task="segment")   # <--- IMPORTANT FOR MASKS
+    # Run YOLO segmentation + tracking 
+    results = model.track(frame, persist=True, tracker='botsort.yaml', conf=Confidence, iou=0.50, task="segment")
     annotated_frame = results[0].plot()      # YOLO auto draws masks + boxes
 
     # Track active IDs
@@ -52,10 +52,10 @@ while True:
 
                 # Draw center point on the annotated frame
                 cv2.circle(annotated_frame, (centerX, centerY), 5, (0, 255, 0), -1)
-                print(f"X:{centerX}", f"Y:{centerY}")
+                print(f"{centerX}, {centerY}")
 
                 # Send coordinates to Arduino
-                message = f"Center X:{centerX},Center Y:{centerY}\n"
+                message = f"('Deer detected'), {centerX},{centerY}\n"
                 ser.write(message.encode('utf-8'))
                 
                 active_ids.add(track_id)
@@ -63,6 +63,9 @@ while True:
 
                 if id_counts[track_id] == STABLE_FRAMES:
                     print(f"Segmented target confirmed (ID {track_id})")
+
+            else:
+                print("no detections")
 
     # --- Reset counts if ID disappears ---
     for tid in list(id_counts.keys()):
