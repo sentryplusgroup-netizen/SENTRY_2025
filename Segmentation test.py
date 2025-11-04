@@ -15,28 +15,36 @@ ser.reset_input_buffer()
 print("Serial connection established")
 
 # Load YOLO model
-model = YOLO("Sentrymodel_seg1_ncnn_model")  
+model = YOLO("Sentrymodel_seg1_ncnn_model", task='segment')  
 
 # Define variables for tracking stability
 id_counts = {}
 STABLE_FRAMES = 10
 Confidence = 0.85
 
+deer_In_view = False # Flag to indicate if deer is in view
+
 while True:
     start_time = time.time()
     ret, frame = cap.read()
     if not ret:
-        print("❌ No frame captured.")
+        print("No frame captured")
         break
 
     # Run YOLO segmentation + tracking 
-    results = model.track(frame, persist=True, tracker='botsort.yaml', conf=Confidence, iou=0.50, task="segment")
+    results = model.track(frame, persist=True, tracker='botsort.yaml', conf=Confidence, iou=0.50)
+    #print(model.task) - for debugging
     annotated_frame = results[0].plot()      # YOLO auto draws masks + boxes
 
     # Track active IDs
     active_ids = set()
 
-    if results[0].boxes is not None:
+    if results[0].boxes is not None and len(results[0].boxes) > 0:
+        # Deer detected
+        if not deer_In_view:
+            ser.write(b"Deer detected\n")
+            deer_In_view = True
+
         for box in results[0].boxes:
             conf = float(box.conf)
             track_id = int(box.id.item()) if box.id is not None else None
@@ -55,7 +63,7 @@ while True:
                 print(f"{centerX}, {centerY}")
 
                 # Send coordinates to Arduino
-                message = f"('Deer detected'), {centerX},{centerY}\n"
+                message = f"{centerX},{centerY}\n"
                 ser.write(message.encode('utf-8'))
                 
                 active_ids.add(track_id)
@@ -64,15 +72,18 @@ while True:
                 if id_counts[track_id] == STABLE_FRAMES:
                     print(f"Segmented target confirmed (ID {track_id})")
 
-            else:
-                print("no detections")
+    else:
+        # No deer detected
+        if deer_In_view:
+            ser.write(b"No deer\n")
+            deer_In_view = False
 
-    # --- Reset counts if ID disappears ---
+    # Reset counts if ID disappears 
     for tid in list(id_counts.keys()):
         if tid not in active_ids:
             id_counts[tid] = 0
 
-    # --- Display FPS ---
+    # Display FPS 
     fps = 1 / (time.time() - start_time)
     cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (10, 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
