@@ -5,8 +5,8 @@ import serial
 
 # Initialize USB camera 
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 640)
 
 # Initialize serial connection to Arduino
 ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
