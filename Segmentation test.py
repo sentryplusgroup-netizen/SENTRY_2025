@@ -2,6 +2,8 @@ import cv2
 from ultralytics import YOLO
 import time
 import serial
+from flask import Flask, Response
+import threading
 
 # Initialize USB camera 
 cap = cv2.VideoCapture(0)
@@ -17,10 +19,38 @@ print("Serial connection established")
 # Load YOLO model
 model = YOLO("Sentrymodel_seg1_ncnn_model", task='segment')  
 
+# Flask app for video streaming (not used in main loop)
+app = Flask(__name__)
+latest_frame = None
+
+def generate_frames():
+    global latest_frame
+    while True:
+        if latest_frame is None:
+            continue
+        ret, buffer = cv2.imencode('.jpg', latest_frame)
+        frame = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+        
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+# Start Flask app in a separate thread
+def run_flask():
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+threading.Thread(target=run_flask, daemon=True).start()
+print("Flask app started")
+
 # Define variables for tracking stability
 id_counts = {}
 STABLE_FRAMES = 10
 Confidence = 0.85
+
+
 
 deer_In_view = False # Flag to indicate if deer is in view
 
@@ -35,6 +65,7 @@ while True:
     results = model.track(frame, persist=True, tracker='botsort.yaml', conf=Confidence, iou=0.50)
     #print(model.task) - for debugging
     annotated_frame = results[0].plot()      # YOLO auto draws masks + boxes
+    latest_frame = annotated_frame  # Update latest frame for Flask streaming
 
     # Track active IDs
     active_ids = set()

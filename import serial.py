@@ -1,7 +1,6 @@
 import serial
 import time
 
-
 # --- Initialize serial connection to Arduino ---
 ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
 time.sleep(3)  # wait for the serial connection to initialize
