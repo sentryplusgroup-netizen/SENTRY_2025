@@ -50,8 +50,6 @@ id_counts = {}
 STABLE_FRAMES = 10
 Confidence = 0.85
 
-
-
 deer_In_view = False # Flag to indicate if deer is in view
 
 while True:
@@ -119,7 +117,7 @@ while True:
     cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (10, 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-    cv2.imshow("Segmentation + Tracking", annotated_frame)
+#cv2.imshow("Camera Feed", annotated_frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
