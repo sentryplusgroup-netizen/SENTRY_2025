@@ -9,17 +9,19 @@ import threading
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+cap.set(cv2.CAP_PROP_FPS, 30)
 
 # Initialize serial connection to Arduino
 ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
 time.sleep(3)  # wait for the serial connection to initialize
-ser.reset_input_buffer()
+ser.reset_input_buffer() # reset the buffer before starting
 print("Serial connection established")
 
 # Load YOLO model
-model = YOLO("Sentrymodel_seg1_ncnn_model", task='segment')  
+model = YOLO("Sentrymodel_seg1_ncnn_model", task='segment')
+model.overrides['half'] = True          # use FP16 math  
 
-# Flask app for video streaming (not used in main loop)
+# Flask app for video streaming 
 app = Flask(__name__)
 latest_frame = None
 
@@ -33,7 +35,7 @@ def generate_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
         
-@app.route('/video_feed')
+@app.route('/sentry_stream')
 def video_feed():
     return Response(generate_frames(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -43,7 +45,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
 threading.Thread(target=run_flask, daemon=True).start()
-print("Flask app started")
+#print("Flask app started")
 
 # Define variables for tracking stability
 id_counts = {}
@@ -60,9 +62,9 @@ while True:
         break
 
     # Run YOLO segmentation + tracking 
-    results = model.track(frame, persist=True, tracker='botsort.yaml', conf=Confidence, iou=0.50)
+    results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=Confidence, iou=0.50)
     #print(model.task) - for debugging
-    annotated_frame = results[0].plot()      # YOLO auto draws masks + boxes
+    annotated_frame = results[0].plot()      # YOLO auto draws masks and boxes
     latest_frame = annotated_frame  # Update latest frame for Flask streaming
 
     # Track active IDs
@@ -89,7 +91,7 @@ while True:
 
                 # Draw center point on the annotated frame
                 cv2.circle(annotated_frame, (centerX, centerY), 5, (0, 255, 0), -1)
-                print(f"{centerX}, {centerY}")
+                #print(f"{centerX}, {centerY}") - Just for debugging
 
                 # Send coordinates to Arduino
                 message = f"{centerX},{centerY}\n"
