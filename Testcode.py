@@ -4,13 +4,13 @@ import time
 
 # --- Initialize USB camera ---
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
 
 # --- Load YOLO model ---
-model = YOLO("yolov8n.pt")
+model = YOLO("Sentrymodel_seg1.pt")  # Load the NCNN converted model
 
-# --- Start tracking loop ---
+# --- Start tracking loop 
 while True:
     start_time = time.time()
 

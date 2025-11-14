@@ -10,10 +10,10 @@ import threading
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
-cap.set(cv2.CAP_PROP_FPS, 30)
+#cap.set(cv2.CAP_PROP_FPS, 30)
 
 # Initialize serial connection to Arduino
-ser = serial.Serial('/dev/ttyACM1', 9600, timeout=1.0)
+ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
 time.sleep(3)  # wait for the serial connection to initialize
 ser.reset_input_buffer() # reset the buffer before starting
 print("Serial connection established")
