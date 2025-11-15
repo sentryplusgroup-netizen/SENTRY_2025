@@ -19,7 +19,7 @@ ser.reset_input_buffer() # reset the buffer before starting
 print("Serial connection established")
 
 # Load YOLO model
-model = YOLO("Sentrymodel_seg1_ncnn_model", task='segment')
+model = YOLO("Sentry_YOLOv8s-seg.pt")  # Load the segmentation model
 model.overrides['half'] = True          # use FP16 math  
 
 # FastAPI app for video streaming 

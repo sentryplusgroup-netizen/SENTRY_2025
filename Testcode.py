@@ -8,7 +8,7 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
 
 # --- Load YOLO model ---
-model = YOLO("Sentrymodel_seg1.pt")  # Load the NCNN converted model
+model = YOLO("Sentry_YOLOv8s-seg.pt")  # Load the NCNN converted model
 
 # --- Start tracking loop 
 while True:
