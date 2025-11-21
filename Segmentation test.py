@@ -5,7 +5,7 @@ from ultralytics import YOLO
 import time
 import serial
 import threading
-                                                                                                                                                                                                                     
+
 # Initialize USB camera 
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
@@ -15,12 +15,12 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
 # Initialize serial connection to Arduino
 ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
 time.sleep(3)  # wait for the serial connection to initialize
-ser.reset_input_buffer() # reset the buffer before starting
-print("Serial connection established")
+ser.reset_input_buffer() # reset and clear the buffer on the pi5
+#print("Serial connection established")
 
 # Load YOLO model
-model = YOLO("Sentry_YOLOv8s-seg.pt")  # Load the segmentation model
-model.overrides['half'] = True          # use FP16 math  
+model = YOLO("Sentrymodel_seg1_ncnn_model", task="segment")  # Load the segmentation model
+model.overrides['half'] = True          # use FP16 math - half precision math to save memory and speed up inference 
 
 # FastAPI app for video streaming 
 app = FastAPI()
@@ -42,14 +42,23 @@ async def video_feed():
                              media_type='multipart/x-mixed-replace; boundary=frame')
 
 # Define variables for tracking stability
-id_counts = {}
-STABLE_FRAMES = 10
-Confidence = 0.85
+Confidence = 0.85 # For yolo model inference
+
+DETECT_CONF = 0.85   # High accuracy required to START tracking
+TRACK_CONF  = 0.35   # Minimum confidence once tracking begins
+LOCK_STABLE_FRAMES = 7 # Number of consecutive frames to confirm stable target
+current_target_id = None
+id_counts = {}  # Dictionary to count stable frames for each ID
 
 deer_In_view = False # Flag to indicate if deer is in view
 
+# Add this at the top with other imports/globals
+frame_lock = threading.Lock() 
+latest_frame = None # Already defined
+
 def yolo_loop():
     global latest_frame, deer_In_view
+    global current_target_id, id_counts
 
     while True:
         start_time = time.time()
@@ -59,65 +68,120 @@ def yolo_loop():
             break
 
         # Run YOLO segmentation + tracking 
-        results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=Confidence, iou=0.50)
+        results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=0.40, iou=0.50)
         #print(model.task) - for debugging
         annotated_frame = results[0].plot()      # YOLO auto draws masks and boxes
-        latest_frame = annotated_frame  # Update latest frame for streaming
+        # --- Safely update the global frame ---
+        with frame_lock:
+            latest_frame = annotated_frame  # Update latest frame for streaming
 
-        # Track active IDs
-        active_ids = set()
+        # ---------------------------
+        # If YOLO detected something
+        # ---------------------------
+        boxes = results[0].boxes
+        if boxes is not None and len(boxes) > 0:
 
-        if results[0].boxes is not None and len(results[0].boxes) > 0:
-            # Deer detected
-            if not deer_In_view:
-                ser.write(b"Deer detected\n")
-                deer_In_view = True
+            # ------------------------------------
+            # PASS 1 — Find the best candidate box
+            # ------------------------------------
+            best_conf = 0
+            best_id = None
 
-            for box in results[0].boxes:
+            for box in boxes:
                 conf = float(box.conf)
-                track_id = int(box.id.item()) if box.id is not None else None
+                tid = int(box.id.item()) if box.id is not None else None
+                if tid is None:
+                    continue
 
-                if conf >= Confidence and track_id is not None:
-                    # Grab bounding box coordinates
-                    x1, y1, x2, y2 = box.xyxy[0]
-                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                if conf > best_conf:
+                    best_conf = conf
+                    best_id = tid
 
-                    # Get center of bounding box
-                    centerX = int((x1 + x2) / 2)
-                    centerY = int((y1 + y2) / 2)
+            # ------------------------------------
+            # DETECTION PHASE — No target locked
+            # ------------------------------------
+            if current_target_id is None:
+                if best_conf >= DETECT_CONF:
 
-                    # Draw center point on the annotated frame
-                    cv2.circle(annotated_frame, (centerX, centerY), 5, (0, 255, 0), -1)
-                    #print(f"{centerX}, {centerY}") - Just for debugging
+                    # New refinement: Clear counts for any ID that is NOT the current best
+                    keys_to_remove = [k for k in id_counts if k != best_id]
+                    for k in keys_to_remove:
+                        id_counts.pop(k)
 
-                    # Send coordinates to Arduino
-                    message = f"{centerX},{centerY}\n"
-                    ser.write(message.encode('utf-8'))
-                    
-                    active_ids.add(track_id)
-                    id_counts[track_id] = id_counts.get(track_id, 0) + 1
+                    # Build stability over multiple frames
+                    id_counts[best_id] = id_counts.get(best_id, 0) + 1
 
-                    if id_counts[track_id] == STABLE_FRAMES:
-                        print(f"Segmented target confirmed (ID {track_id})")
+                    if id_counts[best_id] >= LOCK_STABLE_FRAMES:
+                        current_target_id = best_id
+                        id_counts.clear()  # Reset counts once locked
+                        deer_In_view = True
+                        ser.write(b"Deer detected\n")
+                        print(f"[LOCKED] Target acquired — ID {current_target_id}")
+                else:
+                    # Not confident enough → ignore
+                    id_counts.clear()  # Reset counts if not confident
+                    latest_frame = annotated_frame
+                    continue
 
+            # ------------------------------------
+            # TRACKING PHASE — We have a target
+            # ------------------------------------
+            else:
+                found_target = False
+
+                for box in boxes:
+                    tid = int(box.id.item()) if box.id is not None else None
+                    if tid == current_target_id:
+
+                        conf = float(box.conf)
+
+                        # Low confidence allowed during tracking
+                        if conf >= TRACK_CONF:
+                            found_target = True
+
+                            # Extract bounding box
+                            x1, y1, x2, y2 = box.xyxy[0]
+                            x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+
+                            centerX = (x1 + x2) // 2
+                            centerY = (y1 + y2) // 2
+
+                            # Draw center mark
+                            cv2.circle(annotated_frame, (centerX, centerY), 5, (0, 255, 0), -1)
+
+                            # Send to Arduino
+                            msg = f"{centerX},{centerY}\n"
+                            ser.write(msg.encode('utf-8'))
+
+                        break
+
+                # ------------------------------------
+                # Target LOST
+                # ------------------------------------
+                if not found_target:
+                    #print("[LOST] Target disappeared")
+                    ser.write(b"No deer\n")
+                    deer_In_view = False
+                    current_target_id = None
+
+        # ---------------------------
+        # No detections at all
+        # ---------------------------
         else:
             # No deer detected
             if deer_In_view:
                 ser.write(b"No deer\n")
                 deer_In_view = False
-
-        # Reset counts if ID disappears 
-        for tid in list(id_counts.keys()):
-            if tid not in active_ids:
-                id_counts[tid] = 0
+                current_target_id = None
+                id_counts.clear()  # Reset counts if no detections
 
         # Display FPS 
         fps = 1 / (time.time() - start_time)
         cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (10, 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        #if cv2.waitKey(1) & 0xFF == ord('q'):
+            #break
 
 # Run YOLO loop in background thread
 threading.Thread(target=yolo_loop, daemon=True).start()

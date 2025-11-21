@@ -21,13 +21,13 @@ fps_history = deque(maxlen=10)
 
 # Stability variables
 stable_counter = 0
-STABLE_REQUIRED = 1
+STABLE_REQUIRED = 3
 previous_mask_exists = False
 
 # Filtering thresholds
-MIN_AREA = 400
-CONF_THRESH = 0.80
-SOLIDITY_THRESH = 0.40   # NEW — rejects weird shapes
+MIN_AREA = 50
+CONF_THRESH = 0.70
+SOLIDITY_THRESH = 0.50  # NEW — rejects weird shapes
 
 while True:
     start_time = time.time()
@@ -66,6 +66,7 @@ while True:
             # 3️⃣ Solidity filter (major fix)
             hull = cv2.convexHull(polygon)
             hull_area = cv2.contourArea(hull)
+            print(hull_area)
 
             if hull_area == 0:
                 continue
