@@ -1,117 +1,48 @@
 import cv2
 from picamera2 import Picamera2
 from ultralytics import YOLO
-import time
-from collections import deque
-import numpy as np
 
-# Initialize the Picamera2
+# Set up the camera with Picam
 picam2 = Picamera2()
-picam2.preview_configuration.main.size = (320, 320)
+picam2.preview_configuration.main.size = (1280, 1280)
 picam2.preview_configuration.main.format = "RGB888"
 picam2.preview_configuration.align()
 picam2.configure("preview")
 picam2.start()
 
-# Load YOLO model
-model = YOLO("SentryYOLOv8_1_ncnn_model", task='segment')
-
-# FPS smoothing
-fps_history = deque(maxlen=10)
-
-# Stability variables
-stable_counter = 0
-STABLE_REQUIRED = 3
-previous_mask_exists = False
-
-# Filtering thresholds
-MIN_AREA = 50
-CONF_THRESH = 0.70
-SOLIDITY_THRESH = 0.50  # NEW — rejects weird shapes
+# Load YOLOv8
+model = YOLO("Sentry_finModel_1.pt")
 
 while True:
-    start_time = time.time()
-
-    # Capture frame
+    # Capture a frame from the camera
     frame = picam2.capture_array()
-
-    # Run YOLO segmentation + tracking
-    results = model.track(frame, tracker='bytetrack.yaml', persist=True)
-
-    # Draw YOLO results first
+    
+    # Run YOLO model on the captured frame and store the results
+    results = model(frame)
+    
+    # Output the visual detection data, we will draw this on our camera preview window
     annotated_frame = results[0].plot()
+    
+    # Get inference time
+    inference_time = results[0].speed['inference']
+    fps = 1000 / inference_time  # Convert to milliseconds
+    text = f'FPS: {fps:.1f}'
 
-    # Extract boxes + masks
-    boxes = results[0].boxes
-    masks = results[0].masks
+    # Define font and position
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size = cv2.getTextSize(text, font, 1, 2)[0]
+    text_x = annotated_frame.shape[1] - text_size[0] - 10  # 10 pixels from the right
+    text_y = text_size[1] + 10  # 10 pixels from the top
 
-    mask_valid = False  # default → assume no valid masks
+    # Draw the text on the annotated frame
+    cv2.putText(annotated_frame, text, (text_x, text_y), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
-    if masks is not None and boxes is not None:
-
-        # Loop through detected masks
-        for i in range(len(masks.xy)):
-            polygon = masks.xy[i]
-            conf = boxes.conf[i].item()
-
-            # 1️⃣ Confidence filter
-            if conf < CONF_THRESH:
-                continue
-
-            # 2️⃣ Area filter
-            area = cv2.contourArea(polygon)
-            if area < MIN_AREA:
-                continue
-
-            # 3️⃣ Solidity filter (major fix)
-            hull = cv2.convexHull(polygon)
-            hull_area = cv2.contourArea(hull)
-            print(hull_area)
-
-            if hull_area == 0:
-                continue
-
-            solidity = area / hull_area
-
-            if solidity < SOLIDITY_THRESH:
-                continue  # skip weird fake shapes
-
-            # If reached here → mask is valid
-            mask_valid = True
-            break  # no need to check the rest
-
-    # --------------------------
-    #   Stability filtering
-    # --------------------------
-    if mask_valid:
-        if previous_mask_exists:
-            stable_counter += 1
-        else:
-            stable_counter = 0
-    else:
-        stable_counter = 0
-
-    previous_mask_exists = mask_valid
-
-    # If NOT stable enough → hide masks completely
-    if stable_counter < STABLE_REQUIRED:
-        annotated_frame = frame.copy()  # show raw frame only
-
-    # --------------------------
-    #   FPS calculation
-    # --------------------------
-    frame_time = time.time() - start_time
-    fps_history.append(frame_time)
-    fps = 1 / (sum(fps_history) / len(fps_history))
-
-    cv2.putText(annotated_frame, f"FPS: {fps:.2f}",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                0.7, (0, 255, 0), 2)
-
-    # Display
+    # Display the resulting frame
     cv2.imshow("Camera", annotated_frame)
 
+    # Exit the program if q is pressed
     if cv2.waitKey(1) == ord("q"):
         break
 
+# Close all windows
 cv2.destroyAllWindows()
