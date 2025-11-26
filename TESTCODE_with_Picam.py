@@ -4,21 +4,21 @@ from ultralytics import YOLO
 
 # Set up the camera with Picam
 picam2 = Picamera2()
-picam2.preview_configuration.main.size = (1280, 1280)
+picam2.preview_configuration.main.size = (640, 640)
 picam2.preview_configuration.main.format = "RGB888"
 picam2.preview_configuration.align()
 picam2.configure("preview")
 picam2.start()
 
 # Load YOLOv8
-model = YOLO("Sentry_finModel_1.pt")
+model = YOLO("best_ncnn_model", task="segment")  # Load the NCNN model
 
 while True:
     # Capture a frame from the camera
     frame = picam2.capture_array()
     
     # Run YOLO model on the captured frame and store the results
-    results = model(frame)
+    results = model.predict(frame)
     
     # Output the visual detection data, we will draw this on our camera preview window
     annotated_frame = results[0].plot()
