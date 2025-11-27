@@ -4,14 +4,14 @@ from ultralytics import YOLO
 
 # Set up the camera with Picam
 picam2 = Picamera2()
-picam2.preview_configuration.main.size = (640, 640)
+picam2.preview_configuration.main.size = (480, 480)
 picam2.preview_configuration.main.format = "RGB888"
 picam2.preview_configuration.align()
 picam2.configure("preview")
 picam2.start()
 
 # Load YOLOv8
-model = YOLO("best_ncnn_model", task="segment")  # Load the NCNN model
+model = YOLO("Sentrymodel_seg1_ncnn_model", task="segment")  # Load the NCNN model
 
 while True:
     # Capture a frame from the camera
