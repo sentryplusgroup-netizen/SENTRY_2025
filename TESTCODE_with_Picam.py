@@ -4,7 +4,7 @@ from ultralytics import YOLO
 
 # Set up the camera with Picam
 picam2 = Picamera2()
-picam2.preview_configuration.main.size = (480, 480)
+picam2.preview_configuration.main.size = (320, 320)
 picam2.preview_configuration.main.format = "RGB888"
 picam2.preview_configuration.align()
 picam2.configure("preview")
@@ -18,7 +18,7 @@ while True:
     frame = picam2.capture_array()
     
     # Run YOLO model on the captured frame and store the results
-    results = model.predict(frame)
+    results = model.predict(frame, imgsz=640, conf=0.5, device='cpu')  # Use CPU for inference
     
     # Output the visual detection data, we will draw this on our camera preview window
     annotated_frame = results[0].plot()
