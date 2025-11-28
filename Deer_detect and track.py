@@ -3,10 +3,13 @@ from ultralytics import YOLO
 import time
 
 # --- Load your YOLO11 model ---
-model = YOLO("Seg_yolov8n_model1.pt")  # replace with your trained model path
+model = YOLO("Sentry_finModel_1_ncnn_model", task="segment")  # replace with your trained model path
 
-# --- Open USB camera ---
-cap = cv2.VideoCapture(0)  # try 1 if multiple cameras
+# --- Open USB camera (explicit device path) ---
+cap = cv2.VideoCapture("/dev/video7")
+
+# If your camera supports MJPEG (most USB cams do), enable it for higher FPS
+cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 256)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 256)
 
@@ -26,7 +29,7 @@ while True:
     start = time.time()
 
     # --- Run YOLO11 tracking ---
-    results = model.track(frame, persist=True, tracker='botsort.yaml', task="segment", conf=0.70, imgsz=320)
+    results = model.track(frame, persist=True, tracker='botsort.yaml', conf=0.70, iou=0.50)
 
     deer_detected_this_frame = False
 
@@ -56,7 +59,7 @@ while True:
 
     # Confirmed detection only after MIN_PERSISTENCE frames
     if deer_detected_count >= MIN_PERSISTENCE:
-        cv2.putText(frame, "🦌 DEER DETECTED!", (10, 60),
+        cv2.putText(frame,
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
 
     # --- FPS calculation ---

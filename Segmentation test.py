@@ -7,10 +7,13 @@ import serial
 import threading
 
 # Initialize USB camera 
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture("/dev/video7")
+
+# If your camera supports MJPEG (most USB cams do), enable it for higher FPS
+cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
-#cap.set(cv2.CAP_PROP_FPS, 30)
+cap.set(cv2.CAP_PROP_FPS, 30)
 
 # Initialize serial connection to Arduino
 ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
@@ -25,14 +28,15 @@ model.overrides['half'] = True          # use FP16 math - half precision math to
 # FastAPI app for video streaming 
 app = FastAPI()
 latest_frame = None
+cached_jpeg_frame = None  # Cache encoded JPEG to avoid re-encoding
 
 def generate_frames():
-    global latest_frame
+    global cached_jpeg_frame
     while True:
-        if latest_frame is None:
+        if cached_jpeg_frame is None:
             continue
-        ret, buffer = cv2.imencode('.jpg', latest_frame)
-        frame = buffer.tobytes()
+        with frame_lock:
+            frame = cached_jpeg_frame
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
@@ -42,8 +46,6 @@ async def video_feed():
                              media_type='multipart/x-mixed-replace; boundary=frame')
 
 # Define variables for tracking stability
-Confidence = 0.85 # For yolo model inference
-
 DETECT_CONF = 0.85   # High accuracy required to START tracking
 TRACK_CONF  = 0.35   # Minimum confidence once tracking begins
 LOCK_STABLE_FRAMES = 7 # Number of consecutive frames to confirm stable target
@@ -53,11 +55,10 @@ id_counts = {}  # Dictionary to count stable frames for each ID
 deer_In_view = False # Flag to indicate if deer is in view
 
 # Add this at the top with other imports/globals
-frame_lock = threading.Lock() 
-latest_frame = None # Already defined
+frame_lock = threading.Lock()
 
 def yolo_loop():
-    global latest_frame, deer_In_view
+    global latest_frame, cached_jpeg_frame, deer_In_view
     global current_target_id, id_counts
 
     while True:
@@ -71,9 +72,6 @@ def yolo_loop():
         results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=0.40, iou=0.50)
         #print(model.task) - for debugging
         annotated_frame = results[0].plot()      # YOLO auto draws masks and boxes
-        # --- Safely update the global frame ---
-        with frame_lock:
-            latest_frame = annotated_frame  # Update latest frame for streaming
 
         # ---------------------------
         # If YOLO detected something
@@ -179,6 +177,13 @@ def yolo_loop():
         fps = 1 / (time.time() - start_time)
         cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (10, 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        # --- Encode frame once and cache for streaming (improves performance) ---
+        ret, buffer = cv2.imencode('.jpg', annotated_frame)
+        encoded_frame = buffer.tobytes()
+        with frame_lock:
+            latest_frame = annotated_frame  # Update latest frame for tracking logic
+            cached_jpeg_frame = encoded_frame  # Update cached JPEG for streaming
 
         #if cv2.waitKey(1) & 0xFF == ord('q'):
             #break
