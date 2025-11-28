@@ -11,8 +11,8 @@ cap = cv2.VideoCapture("/dev/video7")
 
 # If your camera supports MJPEG (most USB cams do), enable it for higher FPS
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 416)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 416)
 cap.set(cv2.CAP_PROP_FPS, 30)
 
 # Initialize serial connection to Arduino
@@ -22,7 +22,7 @@ ser.reset_input_buffer() # reset and clear the buffer on the pi5
 #print("Serial connection established")
 
 # Load YOLO model
-model = YOLO("Sentrymodel_seg1_ncnn_model", task="segment")  # Load the segmentation model
+model = YOLO("Sentry_finModel_1_ncnn_model", task="segment")  # Load the segmentation model
 model.overrides['half'] = True          # use FP16 math - half precision math to save memory and speed up inference 
 
 # FastAPI app for video streaming 
@@ -65,13 +65,13 @@ def yolo_loop():
         start_time = time.time()
         ret, frame = cap.read()
         if not ret:
-            print("No frame captured")
+            #print("No frame captured")
             break
 
         # Run YOLO segmentation + tracking 
         results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=0.40, iou=0.50)
         #print(model.task) - for debugging
-        annotated_frame = results[0].plot()      # YOLO auto draws masks and boxes
+        annotated_frame = results[0].boxes()      # YOLO auto draws masks and boxes
 
         # ---------------------------
         # If YOLO detected something
@@ -82,18 +82,18 @@ def yolo_loop():
             # ------------------------------------
             # PASS 1 — Find the best candidate box
             # ------------------------------------
-            best_conf = 0
-            best_id = None
+            best_conf = 0  # Highest confidence found so far
+            best_id = None  # Track ID of the deer with highest confidence
 
             for box in boxes:
-                conf = float(box.conf)
-                tid = int(box.id.item()) if box.id is not None else None
+                conf = float(box.conf)  # Confidence of this detection
+                tid = int(box.id.item()) if box.id is not None else None  # Track ID of this deer
                 if tid is None:
                     continue
 
-                if conf > best_conf:
-                    best_conf = conf
-                    best_id = tid
+                if conf > best_conf:  # If this deer is more confident than previous best
+                    best_conf = conf  # Update highest confidence
+                    best_id = tid  # Update ID of most confident deer
 
             # ------------------------------------
             # DETECTION PHASE — No target locked
@@ -114,7 +114,7 @@ def yolo_loop():
                         id_counts.clear()  # Reset counts once locked
                         deer_In_view = True
                         ser.write(b"Deer detected\n")
-                        print(f"[LOCKED] Target acquired — ID {current_target_id}")
+                        #print(f"[LOCKED] Target acquired — ID {current_target_id}")
                 else:
                     # Not confident enough → ignore
                     id_counts.clear()  # Reset counts if not confident
