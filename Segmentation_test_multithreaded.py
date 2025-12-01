@@ -5,6 +5,12 @@ from ultralytics import YOLO
 import time
 import serial
 import threading
+import queue
+
+# Queues for thread communication
+frame_queue = queue.Queue(maxsize=3)      # Raw frames from camera
+detection_queue = queue.Queue(maxsize=3)  # Results from YOLO
+streaming_queue = queue.Queue(maxsize=1)  # Final frames for streaming
 
 # Initialize USB camera 
 cap = cv2.VideoCapture("/dev/video0")
@@ -13,72 +19,75 @@ cap = cv2.VideoCapture("/dev/video0")
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
-#cap.set(cv2.CAP_PROP_FPS, 30)
 
 # Initialize serial connection to Arduino
 ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
 time.sleep(3)  # wait for the serial connection to initialize
 ser.reset_input_buffer() # reset and clear the buffer on the pi5
-#print("Serial connection established")
 
 # Load YOLO model
-model = YOLO("Sentry_finModel_1_ncnn_model")  # Load the segmentation model
+model = YOLO("Sentry_finModel_1_ncnn_model", task="segment")  # Load the segmentation model
 model.overrides['half'] = True          # use FP16 math - half precision math to save memory and speed up inference 
 
 # FastAPI app for video streaming 
 app = FastAPI()
-latest_frame = None
-cached_jpeg_frame = None  # Cache encoded JPEG to avoid re-encoding
 
-def generate_frames():
-    global cached_jpeg_frame
-    while True:
-        if cached_jpeg_frame is None:
-            continue
-        with frame_lock:
-            frame = cached_jpeg_frame
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-
-@app.get('/sentry_stream')
-async def video_feed():
-    return StreamingResponse(generate_frames(),
-                             media_type='multipart/x-mixed-replace; boundary=frame')
-
-# Define variables for tracking stability
+# Global variables for tracking
 DETECT_CONF = 0.85   # High accuracy required to START tracking
 TRACK_CONF  = 0.35   # Minimum confidence once tracking begins
 LOCK_STABLE_FRAMES = 7 # Number of consecutive frames to confirm stable target
 current_target_id = None
 id_counts = {}  # Dictionary to count stable frames for each ID
-
 deer_In_view = False # Flag to indicate if deer is in view
 
-# Add this at the top with other imports/globals
 frame_lock = threading.Lock()
+cached_jpeg_frame = None
+fps_display = 0
 
-def yolo_loop():
-    global latest_frame, cached_jpeg_frame, deer_In_view
-    global current_target_id, id_counts
-
+# --- THREAD 1: Frame Grabber ---
+def frame_grabber():
+    """Continuously read frames from camera (CPU light, GPU idle)"""
     while True:
-        start_time = time.time()
         ret, frame = cap.read()
         if not ret:
-            #print("No frame captured")
             break
+        try:
+            frame_queue.put(frame, timeout=0.5)
+        except queue.Full:
+            pass  # Drop frame if buffer full
 
-        # Run YOLO segmentation + tracking 
+# --- THREAD 2: YOLO Detection ---
+def yolo_detector():
+    """Run YOLO inference (GPU busy, waiting for frames is blocked)"""
+    while True:
+        try:
+            frame = frame_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+        
+        # Run detection
         results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=0.40, iou=0.50)
-        #print(model.task) - for debugging
-        annotated_frame = results[0].plot(boxes=True, masks=False)      # YOLO auto draws boxes
+        annotated_frame = results[0].plot(boxes=True, masks=False)
+        
+        # Put results in next queue
+        try:
+            detection_queue.put((frame, annotated_frame, results), timeout=0.5)
+        except queue.Full:
+            pass
 
-        # ---------------------------
-        # If YOLO detected something
-        # ---------------------------
+# --- THREAD 3: Tracking & Arduino ---
+def tracker_and_serial():
+    """Handle tracking logic and Arduino communication"""
+    global current_target_id, id_counts, deer_In_view
+    
+    while True:
+        try:
+            frame, annotated_frame, results = detection_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+        
         boxes = results[0].boxes
         if boxes is not None and len(boxes) > 0:
-
             # ------------------------------------
             # PASS 1 — Find the best candidate box
             # ------------------------------------
@@ -113,8 +122,10 @@ def yolo_loop():
                         current_target_id = best_id
                         id_counts.clear()  # Reset counts once locked
                         deer_In_view = True
-                        ser.write(b"Deer detected\n")
-                        #print(f"[LOCKED] Target acquired — ID {current_target_id}")
+                        try:
+                            ser.write(b"Deer detected\n")
+                        except Exception as e:
+                            pass
                 else:
                     # Not confident enough → ignore
                     id_counts.clear()  # Reset counts if not confident
@@ -147,8 +158,11 @@ def yolo_loop():
                             cv2.circle(annotated_frame, (centerX, centerY), 5, (0, 255, 0), -1)
 
                             # Send to Arduino
-                            msg = f"{centerX},{centerY}\n"
-                            ser.write(msg.encode('utf-8'))
+                            try:
+                                msg = f"{centerX},{centerY}\n"
+                                ser.write(msg.encode('utf-8'))
+                            except Exception as e:
+                                pass
 
                         break
 
@@ -156,8 +170,10 @@ def yolo_loop():
                 # Target LOST
                 # ------------------------------------
                 if not found_target:
-                    #print("[LOST] Target disappeared")
-                    ser.write(b"No deer\n")
+                    try:
+                        ser.write(b"No deer\n")
+                    except Exception as e:
+                        pass
                     deer_In_view = False
                     current_target_id = None
 
@@ -167,28 +183,72 @@ def yolo_loop():
         else:
             # No deer detected
             if deer_In_view:
-                ser.write(b"No deer\n")
+                try:
+                    ser.write(b"No deer\n")
+                except Exception as e:
+                    pass
                 deer_In_view = False
                 current_target_id = None
                 id_counts.clear()  # Reset counts if no detections
+        
+        # Send to streaming queue
+        try:
+            streaming_queue.put(annotated_frame, timeout=0.5)
+        except queue.Full:
+            pass
 
-        # Display FPS 
-        fps = 1 / (time.time() - start_time)
-        cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (10, 10),
+# --- THREAD 4: Streaming & FPS ---
+def streaming_handler():
+    """Handle frame encoding and FPS display"""
+    global fps_display, cached_jpeg_frame
+    prev_time = time.time()
+    
+    while True:
+        try:
+            annotated_frame = streaming_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+        
+        # Calculate FPS
+        current_time = time.time()
+        fps_display = 1 / (current_time - prev_time) if (current_time - prev_time) > 0 else 0
+        prev_time = current_time
+        
+        # Add FPS text
+        cv2.putText(annotated_frame, f"FPS: {fps_display:.1f}", (10, 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # Encode and cache
+        try:
+            ret, buffer = cv2.imencode('.jpg', annotated_frame)
+            encoded_frame = buffer.tobytes()
+            
+            with frame_lock:
+                cached_jpeg_frame = encoded_frame
+        except Exception as e:
+            pass
 
-        # --- Encode frame once and cache for streaming (improves performance) ---
-        ret, buffer = cv2.imencode('.jpg', annotated_frame)
-        encoded_frame = buffer.tobytes()
+# FastAPI streaming functions
+def generate_frames():
+    global cached_jpeg_frame
+    while True:
+        if cached_jpeg_frame is None:
+            continue
         with frame_lock:
-            latest_frame = annotated_frame  # Update latest frame for tracking logic
-            cached_jpeg_frame = encoded_frame  # Update cached JPEG for streaming
+            frame = cached_jpeg_frame
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-        #if cv2.waitKey(1) & 0xFF == ord('q'):
-            #break
+@app.get('/sentry_stream')
+async def video_feed():
+    return StreamingResponse(generate_frames(),
+                             media_type='multipart/x-mixed-replace; boundary=frame')
 
-# Run YOLO loop in background thread
-threading.Thread(target=yolo_loop, daemon=True).start()
+# Start all threads
+threading.Thread(target=frame_grabber, daemon=True).start()
+threading.Thread(target=yolo_detector, daemon=True).start()
+threading.Thread(target=tracker_and_serial, daemon=True).start()
+threading.Thread(target=streaming_handler, daemon=True).start()
 
 # Run this in the terminal:
-# uvicorn 'Segmentation test':app --host 0.0.0.0 --port 5000
+# uvicorn 'Segmentation_test_multithreaded':app --host 0.0.0.0 --port 5000

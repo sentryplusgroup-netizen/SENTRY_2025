@@ -8,7 +8,7 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
 
 # --- Load YOLO model ---
-model = YOLO("yolo11n_custom_ncnn_model")
+model = YOLO("Sentry_finModel_1_ncnn_model")
 
 # --- Tracking memory for ID stability ---
 id_counts = {}               # Track how many frames each ID has persisted
@@ -23,7 +23,7 @@ while True:
         break
 
     # --- Run YOLO tracking ---
-    results = model.track(frame, persist=True, tracker='botsort.yaml', conf=CONF_THRESHOLD, iou=0.40)
+    results = model.track(frame, tracker='bytesort.yaml', conf=CONF_THRESHOLD, iou=0.40)
     annotated_frame = results[0].plot()  # Regular YOLO annotation only
 
     # --- Track active IDs this frame ---
