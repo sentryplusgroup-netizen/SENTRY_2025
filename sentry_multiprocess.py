@@ -10,43 +10,43 @@ from ultralytics.utils import LOGGER
 import time
 import serial
 import logging
-from multiprocessing import Process, Queue
-import queue as pyqueue
+from multiprocessing import Process, Queue, Event
+import atexit
 
-# --------------------------
-# Global settings
-# --------------------------
-LOGGER.setLevel(logging.CRITICAL)  # silence Ultralytics spam
+# ==========================
+# GLOBAL SETTINGS
+# ==========================
+LOGGER.setLevel(logging.CRITICAL)
 
-TARGET_FPS = 10                    # desired stable FPS
+TARGET_FPS = 10
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 
-DETECT_CONF = 0.85                 # confidence to START tracking
-TRACK_CONF = 0.35                  # confidence to CONTINUE tracking
-LOCK_STABLE_FRAMES = 5             # frames to confirm target
+DETECT_CONF = 0.85
+TRACK_CONF = 0.35
+LOCK_STABLE_FRAMES = 5
 
-JPEG_QUEUE_MAXSIZE = 2             # keep only the latest frames
+JPEG_QUEUE_MAXSIZE = 2
 
-# Shared JPEG queue between processes
-jpeg_queue: Queue = Queue(maxsize=JPEG_QUEUE_MAXSIZE)
+jpeg_queue = Queue(maxsize=JPEG_QUEUE_MAXSIZE)
+stop_event = Event()      # <---- NEW for safe shutdown
 
 app = FastAPI()
 
 
+# ======================================================Event==========
+#                       YOLO WORKER PROCESS
 # ================================================================
-#                   YOLO WORKER PROCESS
-# ================================================================
-def yolo_worker(jpeg_queue: Queue):
-    print("[YOLO] Initializing worker...")
+def yolo_worker(jpeg_queue: Queue, stop_event: Event):
+    print("[YOLO] Worker starting...")
 
-    # ---- Camera ----
+    # ---- CAMERA ----
     cap = cv2.VideoCapture("/dev/video0")
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
     cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
 
-    # ---- Serial ----
+    # ---- SERIAL ----
     try:
         ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
         time.sleep(3)
@@ -56,21 +56,22 @@ def yolo_worker(jpeg_queue: Queue):
         print(f"[YOLO] Serial FAIL: {e}")
         ser = None
 
-    # ---- YOLO ----
+    # ---- YOLO MODEL ----
     print("[YOLO] Loading model...")
     model = YOLO("Sentry_finModel_1_ncnn_model", task="detect")
-    model.overrides["half"] = True
-    #model.overrides["imgsz"] = 320
     model.overrides["conf"] = 0.40
     model.overrides["device"] = "cpu"
 
-    current_target_id = None
+    current_id = None
     id_counts = {}
     deer_in_view = False
     fps_ema = None
 
-    while True:
-        loop_start = time.time()
+    # ===============================
+    #            MAIN LOOP
+    # ===============================
+    while not stop_event.is_set():      # <---- UPDATED
+        start = time.time()
 
         ret, frame = cap.read()
         if not ret:
@@ -86,100 +87,95 @@ def yolo_worker(jpeg_queue: Queue):
             classes=[0]
         )
 
-        annotated_frame = results[0].plot(boxes=True, masks=False)
+        annotated = results[0].plot(boxes=True, masks=False)
         boxes = results[0].boxes
 
-        # ---------------------------
-        # DETECTION + TRACKING LOGIC
-        # ---------------------------
+        # ======================================================
+        #                 DETECTION + TRACKING
+        # ======================================================
         if boxes is not None and len(boxes) > 0:
-
-            # -------- FIND BEST ID --------
             best_conf = 0
             best_id = None
 
             for box in boxes:
-                conf = float(box.conf)
-                tid = int(box.id.item()) if box.id is not None else None
+                tid = box.id
                 if tid is None:
                     continue
+                tid = int(tid.item())
+
+                conf = float(box.conf)
                 if conf > best_conf:
                     best_conf = conf
                     best_id = tid
 
-            # -------- DETECTION PHASE --------
-            if current_target_id is None:
+            # ---------------- DETECTION PHASE ----------------
+            if current_id is None:
                 if best_conf >= DETECT_CONF:
-
-                    # keep only this ID
-                    keys = [k for k in id_counts if k != best_id]
-                    for k in keys:
-                        id_counts.pop(k, None)
-
                     id_counts[best_id] = id_counts.get(best_id, 0) + 1
 
                     if id_counts[best_id] >= LOCK_STABLE_FRAMES:
-                        current_target_id = best_id
+                        current_id = best_id
                         deer_in_view = True
                         id_counts.clear()
                         if ser:
                             ser.write(b"Deer detected\n")
-
                 else:
                     id_counts.clear()
 
-            # -------- TRACKING PHASE --------
+            # ---------------- TRACKING PHASE ----------------
             else:
                 found = False
 
                 for box in boxes:
-                    tid = int(box.id.item()) if box.id is not None else None
-                    if tid == current_target_id:
+                    tid = box.id
+                    if tid is None:
+                        continue
+                    tid = int(tid.item())
+
+                    if tid == current_id:
                         conf = float(box.conf)
 
                         if conf >= TRACK_CONF:
                             found = True
 
-                            # ---- center calculation ----
-                            x1, y1, x2, y2 = box.xyxy[0]
-                            x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+                            # -- center --
+                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                             cx = (x1 + x2) // 2
                             cy = (y1 + y2) // 2
 
-                            cv2.circle(annotated_frame, (cx, cy), 5, (0, 255, 0), -1)
+                            cv2.circle(annotated, (cx, cy), 5, (0, 255, 0), -1)
 
                             if ser:
                                 ser.write(f"{cx},{cy}\n".encode())
                         break
 
                 if not found:
-                    current_target_id = None
+                    current_id = None
                     deer_in_view = False
                     if ser:
                         ser.write(b"No deer\n")
 
+        # ======================================================
+        #                    NO DETECTION
+        # ======================================================
         else:
-            # ---- NO DETECTIONS ----
             if deer_in_view:
+                current_id = None
                 deer_in_view = False
-                current_target_id = None
                 id_counts.clear()
                 if ser:
                     ser.write(b"No deer\n")
 
-        # ---------------------------
-        # Compute FPS (EMA smoothed)
-        # ---------------------------
-        elapsed = time.time() - loop_start
-        instant_fps = 1.0 / elapsed if elapsed > 0 else TARGET_FPS
+        # ======================================================
+        #                    FPS DISPLAY
+        # ======================================================
+        elapsed = time.time() - start
+        fps_inst = 1.0 / elapsed if elapsed > 0 else TARGET_FPS
 
-        if fps_ema is None:
-            fps_ema = instant_fps
-        else:
-            fps_ema = 0.2 * instant_fps + 0.8 * fps_ema
+        fps_ema = fps_inst if fps_ema is None else (0.2 * fps_inst + 0.8 * fps_ema)
 
         cv2.putText(
-            annotated_frame,
+            annotated,
             f"FPS: {fps_ema:.1f}",
             (10, 15),
             cv2.FONT_HERSHEY_SIMPLEX,
@@ -188,40 +184,45 @@ def yolo_worker(jpeg_queue: Queue):
             1
         )
 
-        # ---------------------------
-        # JPEG ENCODE (low quality)
-        # ---------------------------
-        ok, buffer = cv2.imencode(
-            ".jpg",
-            annotated_frame,
-            [int(cv2.IMWRITE_JPEG_QUALITY), 70]
-        )
+        # ======================================================
+        #                    JPEG COMPRESS
+        # ======================================================
+        ok, buffer = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
         if ok:
             jpeg = buffer.tobytes()
+
+            # Keep queue fresh
+            if jpeg_queue.full():
+                try:
+                    jpeg_queue.get_nowait()
+                except:
+                    pass
+
             try:
-                if jpeg_queue.full():
-                    try:
-                        jpeg_queue.get_nowait()
-                    except:
-                        pass
                 jpeg_queue.put_nowait(jpeg)
             except:
                 pass
 
-        # ---------------------------
-        # HARD FPS LIMITER
-        # ---------------------------
-        loop_time = time.time() - loop_start
-        sleep_needed = FRAME_INTERVAL - loop_time
-        if sleep_needed > 0:
-            time.sleep(sleep_needed)
+        # ======================================================
+        #                    FPS LIMITING
+        # ======================================================
+        sleep_time = FRAME_INTERVAL - (time.time() - start)
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+
+    # ===============================
+    # CLEAN EXIT FOR WORKER
+    # ===============================
+    print("[YOLO] Worker shutting down...")
+    cap.release()
+    if ser:
+        ser.close()
 
 
 # ================================================================
-#                   STREAM WORKER (MAIN PROCESS)
+#                   STREAMING GENERATOR
 # ================================================================
 def mjpeg_generator():
-    """Stream JPEGs from queue."""
     while True:
         frame = jpeg_queue.get()
         yield (
@@ -239,11 +240,26 @@ async def sentry_stream():
 
 
 # ================================================================
-#                   START YOLO PROCESS
+#                   START WORKER + CLEANUP
 # ================================================================
-yolo_process = Process(target=yolo_worker, args=(jpeg_queue,), daemon=True)
+yolo_process = Process(
+    target=yolo_worker,
+    args=(jpeg_queue, stop_event),
+    daemon=False
+)
 yolo_process.start()
+
+
+def cleanup():
+    print("[MAIN] Cleaning up worker...")
+    stop_event.set()              # <---- tell worker to stop
+    if yolo_process.is_alive():
+        yolo_process.terminate()
+        yolo_process.join()
+
+
+atexit.register(cleanup)
 
 print("[MAIN] YOLO worker started.")
 print("[MAIN] Run with:")
-print("uvicorn sentry_stable_multiprocess:app --host 0.0.0.0 --port 5000")
+print("uvicorn sentry_multiprocess:app --host 0.0.0.0 --port 5000 --no-access-log")
