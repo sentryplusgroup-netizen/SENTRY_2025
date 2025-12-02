@@ -2,9 +2,16 @@ import cv2
 from ultralytics import YOLO
 import time
 import threading
+import queue
+from ultralytics.utils import LOGGER
+import logging
+LOGGER.setLevel(logging.CRITICAL)
+
+# --- Frame queue to prevent lag ---
+frame_queue = queue.Queue(maxsize=2)  # Keep only latest 2 frames
 
 # --- Load your YOLO model ---
-model = YOLO("Sentry_finModel_1_ncnn_model", task="segment")  # replace with your trained model path
+model = YOLO("Sentry_finModel_1_ncnn_model", task="detect")  # replace with your trained model path
 model.overrides['half'] = True  # use FP16 for faster inference
 
 # --- Open USB camera (explicit device path) ---
@@ -16,7 +23,7 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
 
 # --- Tracking configuration (same as Segmentation test) ---
-DETECT_CONF = 0.60   # High accuracy required to START tracking
+DETECT_CONF = 0.80   # High accuracy required to START tracking
 TRACK_CONF  = 0.35   # Minimum confidence once tracking begins
 LOCK_STABLE_FRAMES = 7 # Number of consecutive frames to confirm stable target
 current_target_id = None
@@ -27,19 +34,45 @@ deer_In_view = False # Flag to indicate if deer is in view
 # Optional: minimum bounding box area to count as a deer
 MIN_AREA = 5000  # adjust based on camera distance / resolution
 
-def yolo_loop():
-    global current_target_id, id_counts, deer_In_view
-    
+# --- THREAD 1: Frame Reader (captures latest frame, drops old ones) ---
+def frame_reader():
+    """Read frames continuously, drop old ones to prevent lag"""
     while True:
         ret, frame = cap.read()
         if not ret:
-            #print("❌ No frame captured.")
-            break
+            time.sleep(0.1)
+            continue
+        try:
+            frame_queue.put(frame, block=False)  # Drop frame if queue full
+        except queue.Full:
+            pass  # Discard old frame, keep latest
+
+# --- THREAD 2: YOLO Processing ---
+def yolo_loop():
+    global current_target_id, id_counts, deer_In_view
+    
+    fps = 0.0  # For smoothed FPS calculation
+    
+    while True:
+        try:
+            frame = frame_queue.get(timeout=1)
+        except queue.Empty:
+            continue
 
         start = time.time()
+        annotated_frame = frame.copy()  # Fallback if YOLO fails
 
         # --- Run YOLO tracking ---
-        results = model.track(frame, persist=True, tracker='botsort.yaml', conf=0.40, iou=0.50)
+        try:
+            results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=0.40, iou=0.30, classes=[0])
+        except Exception as e:
+            time.sleep(0.05)
+            continue
+        
+        if not results or results[0] is None:
+            time.sleep(0.01)
+            continue
+        
         annotated_frame = results[0].plot(boxes=True, masks=False)  # Draw boxes only
 
         boxes = results[0].boxes
@@ -134,8 +167,9 @@ def yolo_loop():
         # Display tracking status
         # (removed "Deer Detected" text display)
 
-        # --- FPS calculation ---
-        fps = 1 / (time.time() - start)
+        # --- FPS calculation (smoothed) ---
+        measured_fps = 1 / max(1e-6, time.time() - start)
+        fps = 0.9 * fps + 0.1 * measured_fps
         cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
@@ -146,7 +180,8 @@ def yolo_loop():
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-# Run YOLO loop in background thread
+# Run YOLO loop in background threads
+threading.Thread(target=frame_reader, daemon=True).start()
 threading.Thread(target=yolo_loop, daemon=True).start()
 
 # Keep main thread alive
@@ -155,7 +190,7 @@ try:
         time.sleep(1)
 except KeyboardInterrupt:
     pass
-
-# --- Cleanup ---
-cap.release()
-cv2.destroyAllWindows()
+finally:
+    # --- Cleanup ---
+    cap.release()
+    cv2.destroyAllWindows()

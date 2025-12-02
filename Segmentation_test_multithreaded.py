@@ -17,8 +17,8 @@ cap = cv2.VideoCapture("/dev/video0")
 
 # If your camera supports MJPEG (most USB cams do), enable it for higher FPS
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 256)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 256)
 
 # Initialize serial connection to Arduino
 ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
@@ -26,7 +26,7 @@ time.sleep(3)  # wait for the serial connection to initialize
 ser.reset_input_buffer() # reset and clear the buffer on the pi5
 
 # Load YOLO model
-model = YOLO("Sentry_finModel_1_ncnn_model", task="segment")  # Load the segmentation model
+model = YOLO("Sentry_finModel_1_ncnn_model", task="detect")  # Load the segmentation model
 model.overrides['half'] = True          # use FP16 math - half precision math to save memory and speed up inference 
 
 # FastAPI app for video streaming 
@@ -66,7 +66,7 @@ def yolo_detector():
             continue
         
         # Run detection
-        results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=0.40, iou=0.50)
+        results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=0.40, iou=0.50, classes=[0])
         annotated_frame = results[0].plot(boxes=True, masks=False)
         
         # Put results in next queue

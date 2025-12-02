@@ -5,6 +5,13 @@ from ultralytics import YOLO
 import time
 import serial
 import threading
+import queue
+from ultralytics.utils import LOGGER
+import logging
+LOGGER.setLevel(logging.CRITICAL)
+
+# Frame queue to prevent lag
+frame_queue = queue.Queue(maxsize=2)  # Keep only latest 2 frames
 
 # Initialize USB camera 
 cap = cv2.VideoCapture("/dev/video0")
@@ -13,7 +20,7 @@ cap = cv2.VideoCapture("/dev/video0")
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
-#cap.set(cv2.CAP_PROP_FPS, 30)
+cap.set(cv2.CAP_PROP_FPS, 12)
 
 # Initialize serial connection to Arduino
 ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
@@ -22,7 +29,7 @@ ser.reset_input_buffer() # reset and clear the buffer on the pi5
 #print("Serial connection established")
 
 # Load YOLO model
-model = YOLO("Sentry_finModel_1_ncnn_model")  # Load the segmentation model
+model = YOLO("Sentry_finModel_1_ncnn_model",task="detect" )  # Load the segmentation model
 model.overrides['half'] = True          # use FP16 math - half precision math to save memory and speed up inference 
 
 # FastAPI app for video streaming 
@@ -48,7 +55,7 @@ async def video_feed():
 # Define variables for tracking stability
 DETECT_CONF = 0.85   # High accuracy required to START tracking
 TRACK_CONF  = 0.35   # Minimum confidence once tracking begins
-LOCK_STABLE_FRAMES = 7 # Number of consecutive frames to confirm stable target
+LOCK_STABLE_FRAMES = 5 # Number of consecutive frames to confirm stable target
 current_target_id = None
 id_counts = {}  # Dictionary to count stable frames for each ID
 
@@ -57,19 +64,40 @@ deer_In_view = False # Flag to indicate if deer is in view
 # Add this at the top with other imports/globals
 frame_lock = threading.Lock()
 
+# --- THREAD 1: Frame Reader (captures latest frame, drops old ones) ---
+def frame_reader():
+    """Read frames continuously, drop old ones to prevent lag"""
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            time.sleep(0.1)
+            continue
+        try:
+            frame_queue.put(frame, block=False)  # Drop frame if queue full
+        except queue.Full:
+            pass  # Discard old frame, keep latest
+
 def yolo_loop():
     global latest_frame, cached_jpeg_frame, deer_In_view
     global current_target_id, id_counts
 
     while True:
+        try:
+            frame = frame_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+
         start_time = time.time()
-        ret, frame = cap.read()
-        if not ret:
-            #print("No frame captured")
-            break
 
         # Run YOLO segmentation + tracking 
-        results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=0.40, iou=0.50)
+        results = model.track(
+            frame,
+            persist=True,
+            tracker='bytetrack.yaml',
+            conf=0.40,
+            iou=0.50,
+            classes=[0]
+        )
         #print(model.task) - for debugging
         annotated_frame = results[0].plot(boxes=True, masks=False)      # YOLO auto draws boxes
 
@@ -188,6 +216,7 @@ def yolo_loop():
             #break
 
 # Run YOLO loop in background thread
+threading.Thread(target=frame_reader, daemon=True).start()
 threading.Thread(target=yolo_loop, daemon=True).start()
 
 # Run this in the terminal:
