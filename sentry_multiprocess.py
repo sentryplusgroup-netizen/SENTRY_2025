@@ -21,29 +21,34 @@ LOGGER.setLevel(logging.CRITICAL)
 TARGET_FPS = 10
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 
-DETECT_CONF = 0.85
-TRACK_CONF = 0.35
+DETECT_CONF = 0.80
+TRACK_CONF = 0.30
 LOCK_STABLE_FRAMES = 5
+LOST_GRACE_FRAMES = 8  # how many consecutive "lost" frames we tolerate
 
-JPEG_QUEUE_MAXSIZE = 2
+JPEG_QUEUE_MAXSIZE = 1
 
 jpeg_queue = Queue(maxsize=JPEG_QUEUE_MAXSIZE)
-stop_event = Event()      # <---- NEW for safe shutdown
+stop_event = Event()      # for safe shutdown
 
 app = FastAPI()
 
-
-# ======================================================Event==========
+# ================================================================
 #                       YOLO WORKER PROCESS
 # ================================================================
 def yolo_worker(jpeg_queue: Queue, stop_event: Event):
     print("[YOLO] Worker starting...")
 
+    # --- Box buffer (for smoothness) ---
+    last_box = None
+    last_box_time = 0.0
+    BOX_HOLD_TIME = 1.0  # seconds to keep last box/use it during grace
+
     # ---- CAMERA ----
     cap = cv2.VideoCapture("/dev/video0")
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 256)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 256)
     cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
 
     # ---- SERIAL ----
@@ -51,6 +56,7 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
         ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
         time.sleep(3)
         ser.reset_input_buffer()
+        ser.write_timeout = 0
         print("[YOLO] Serial OK")
     except Exception as e:
         print(f"[YOLO] Serial FAIL: {e}")
@@ -66,11 +72,12 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
     id_counts = {}
     deer_in_view = False
     fps_ema = None
+    lost_frames = 0  # for grace period handling
 
     # ===============================
     #            MAIN LOOP
     # ===============================
-    while not stop_event.is_set():      # <---- UPDATED
+    while not stop_event.is_set():
         start = time.time()
 
         ret, frame = cap.read()
@@ -78,14 +85,22 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
             time.sleep(0.01)
             continue
 
-        results = model.track(
-            frame,
-            persist=True,
-            tracker="bytetrack.yaml",
-            conf=0.40,
-            iou=0.50,
-            classes=[0]
-        )
+        try:
+            results = model.track(
+                frame,
+                persist=True,
+                tracker="botsort.yaml",
+                conf=0.40,
+                iou=0.50,
+                classes=[0]
+            )
+        except Exception as e:
+            time.sleep(0.05)
+            continue
+        
+        if not results or results[0] is None:
+            time.sleep(0.01)
+            continue
 
         annotated = results[0].plot(boxes=True, masks=False)
         boxes = results[0].boxes
@@ -93,10 +108,13 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
         # ======================================================
         #                 DETECTION + TRACKING
         # ======================================================
-        if boxes is not None and len(boxes) > 0:
-            best_conf = 0
+        has_boxes = boxes is not None and len(boxes) > 0
+
+        if has_boxes:
+            best_conf = 0.0
             best_id = None
 
+            # pick strongest detection
             for box in boxes:
                 tid = box.id
                 if tid is None:
@@ -116,9 +134,13 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
                     if id_counts[best_id] >= LOCK_STABLE_FRAMES:
                         current_id = best_id
                         deer_in_view = True
+                        lost_frames = 0
                         id_counts.clear()
                         if ser:
-                            ser.write(b"Deer detected\n")
+                            try:
+                                ser.write(b"Deer detected\n")
+                            except Exception:
+                                pass
                 else:
                     id_counts.clear()
 
@@ -137,41 +159,115 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
 
                         if conf >= TRACK_CONF:
                             found = True
+                            lost_frames = 0  # we see the target again
 
-                            # -- center --
+                            # -- bounding box & center --
                             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                             cx = (x1 + x2) // 2
                             cy = (y1 + y2) // 2
 
+                            # Store last known good box and time
+                            last_box = (x1, y1, x2, y2)
+                            last_box_time = time.time()
+
                             cv2.circle(annotated, (cx, cy), 5, (0, 255, 0), -1)
 
                             if ser:
-                                ser.write(f"{cx},{cy}\n".encode())
+                                try:
+                                    ser.write(f"{cx},{cy}\n".encode())
+                                except Exception:
+                                    pass
+                        # we break even if conf < TRACK_CONF because this is the correct ID
                         break
 
-                if not found:
-                    current_id = None
-                    deer_in_view = False
-                    if ser:
-                        ser.write(b"No deer\n")
+                # --- If the current tracked ID was NOT found in this frame ---
+                if not found and deer_in_view:
+                    # Send immediate "No deer" on first loss
+                    if lost_frames == 0:
+                        if ser:
+                            try:
+                                ser.write(b"No deer\n")
+                            except Exception:
+                                pass
+                    
+                    lost_frames += 1
+
+                    # Use buffered box within grace period if it's still fresh
+                    if (lost_frames < LOST_GRACE_FRAMES and
+                        last_box is not None and
+                        (time.time() - last_box_time) <= BOX_HOLD_TIME):
+
+                        x1, y1, x2, y2 = last_box
+                        cx = (x1 + x2) // 2
+                        cy = (y1 + y2) // 2
+
+                        # Only draw buffer box if YOLO did NOT detect anything this frame
+                        if not has_boxes:
+                            cv2.circle(annotated, (cx, cy), 5, (0, 255, 0), -1)
+
+
+                        if ser:
+                            try:
+                                ser.write(f"{cx},{cy}\n".encode())
+                            except Exception:
+                                pass
+                    else:
+                        # out of grace or no valid buffer → fully lost
+                        if lost_frames >= LOST_GRACE_FRAMES:
+                            current_id = None
+                            deer_in_view = False
+                            lost_frames = 0
+                            last_box = None
+                            id_counts.clear()
+                            if ser:
+                                try:
+                                    ser.write(b"No deer\n")
+                                except Exception:
+                                    pass
 
         # ======================================================
         #                    NO DETECTION
         # ======================================================
         else:
             if deer_in_view:
-                current_id = None
-                deer_in_view = False
-                id_counts.clear()
-                if ser:
-                    ser.write(b"No deer\n")
+                lost_frames += 1
+
+                # Try to use buffered box during grace
+                if (lost_frames < LOST_GRACE_FRAMES and
+                    last_box is not None and
+                    (time.time() - last_box_time) <= BOX_HOLD_TIME):
+
+                    x1, y1, x2, y2 = last_box
+                    cx = (x1 + x2) // 2
+                    cy = (y1 + y2) // 2
+
+                    if not has_boxes:
+                        cv2.circle(annotated, (cx, cy), 5, (0, 255, 0), -1)
+
+                    if ser:
+                        try:
+                            ser.write(f"{cx},{cy}\n".encode())
+                        except Exception:
+                            pass
+                else:
+                    # truly lost after grace
+                    if lost_frames >= LOST_GRACE_FRAMES:
+                        current_id = None
+                        deer_in_view = False
+                        lost_frames = 0
+                        last_box = None
+                        id_counts.clear()
+                        if ser:
+                            try:
+                                ser.write(b"No deer\n")
+                            except Exception:
+                                pass
 
         # ======================================================
         #                    FPS DISPLAY
         # ======================================================
         elapsed = time.time() - start
         fps_inst = 1.0 / elapsed if elapsed > 0 else TARGET_FPS
-
         fps_ema = fps_inst if fps_ema is None else (0.2 * fps_inst + 0.8 * fps_ema)
 
         cv2.putText(
@@ -191,16 +287,16 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
         if ok:
             jpeg = buffer.tobytes()
 
-            # Keep queue fresh
+            # Keep queue fresh (no backlog)
             if jpeg_queue.full():
                 try:
                     jpeg_queue.get_nowait()
-                except:
+                except Exception:
                     pass
 
             try:
                 jpeg_queue.put_nowait(jpeg)
-            except:
+            except Exception:
                 pass
 
         # ======================================================
@@ -224,12 +320,17 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
 # ================================================================
 def mjpeg_generator():
     while True:
-        frame = jpeg_queue.get()
+        try:
+            frame = jpeg_queue.get(timeout=2)  # 2-second timeout to detect worker failure
+        except:
+            # Queue timeout — worker may have crashed, retry
+            time.sleep(0.1)
+            continue
+        
         yield (
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
         )
-
 
 @app.get("/sentry_stream")
 async def sentry_stream():
@@ -252,7 +353,7 @@ yolo_process.start()
 
 def cleanup():
     print("[MAIN] Cleaning up worker...")
-    stop_event.set()              # <---- tell worker to stop
+    stop_event.set()  # tell worker to stop
     if yolo_process.is_alive():
         yolo_process.terminate()
         yolo_process.join()
@@ -262,4 +363,4 @@ atexit.register(cleanup)
 
 print("[MAIN] YOLO worker started.")
 print("[MAIN] Run with:")
-print("uvicorn sentry_multiprocess:app --host 0.0.0.0 --port 5000 --no-access-log")
+#print("uvicorn sentry_multiprocess:app --host 0.0.0.0 --port 5000 --no-access-log")
