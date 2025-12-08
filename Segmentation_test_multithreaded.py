@@ -6,6 +6,10 @@ import time
 import serial
 import threading
 import queue
+from ultralytics.utils import LOGGER
+import logging
+LOGGER.setLevel(logging.ERROR)
+
 
 # Queues for thread communication
 frame_queue = queue.Queue(maxsize=3)      # Raw frames from camera
@@ -19,6 +23,7 @@ cap = cv2.VideoCapture("/dev/video0")
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 256)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 256)
+#cap.set(cv2.CAP_PROP_FPS, 8) #latest addon
 
 # Initialize serial connection to Arduino
 ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1.0)
@@ -34,11 +39,15 @@ app = FastAPI()
 
 # Global variables for tracking
 DETECT_CONF = 0.85   # High accuracy required to START tracking
-TRACK_CONF  = 0.35   # Minimum confidence once tracking begins
+TRACK_CONF  = 0.30   # Minimum confidence once tracking begins
 LOCK_STABLE_FRAMES = 7 # Number of consecutive frames to confirm stable target
 current_target_id = None
 id_counts = {}  # Dictionary to count stable frames for each ID
 deer_In_view = False # Flag to indicate if deer is in view
+TARGET_LOST_GRACE = 8   # number of frames allowed to lose the deer (very effective)
+lost_frames = 0
+
+
 
 frame_lock = threading.Lock()
 cached_jpeg_frame = None
@@ -167,15 +176,24 @@ def tracker_and_serial():
                         break
 
                 # ------------------------------------
-                # Target LOST
+                # Target LOST with grace period
                 # ------------------------------------
                 if not found_target:
-                    try:
-                        ser.write(b"No deer\n")
-                    except Exception as e:
-                        pass
-                    deer_In_view = False
-                    current_target_id = None
+                    lost_frames += 1
+
+                    if lost_frames >= TARGET_LOST_GRACE:
+                        # Fully lost the deer
+                        try:
+                            ser.write(b"No deer\n")
+                        except:
+                            pass
+        
+                        deer_In_view = False
+                        current_target_id = None
+                        lost_frames = 0    # Reset
+                else:
+                    lost_frames = 0  # reset if the target is seen again
+            
 
         # ---------------------------
         # No detections at all
