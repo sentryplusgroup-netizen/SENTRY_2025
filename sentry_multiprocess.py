@@ -24,7 +24,7 @@ FRAME_INTERVAL = 1.0 / TARGET_FPS
 DETECT_CONF = 0.80
 TRACK_CONF = 0.30
 LOCK_STABLE_FRAMES = 5
-LOST_GRACE_FRAMES = 8  # how many consecutive "lost" frames we tolerate
+LOST_GRACE_FRAMES = 15  # how many consecutive "lost" frames we tolerate
 
 JPEG_QUEUE_MAXSIZE = 1
 
@@ -47,8 +47,8 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
     # ---- CAMERA ----
     cap = cv2.VideoCapture("/dev/video0")
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 256)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 256)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
     cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
 
     # ---- SERIAL ----
@@ -64,8 +64,8 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
 
     # ---- YOLO MODEL ----
     print("[YOLO] Loading model...")
-    model = YOLO("Sentry_finModel_1_ncnn_model", task="detect")
-    model.overrides["conf"] = 0.40
+    model = YOLO("Sentry_finModel_1_ncnn_model", task="detect")  # replace with your trained model path
+    model.overrides['half'] = True  # use FP16 for faster inference
     model.overrides["device"] = "cpu"
 
     current_id = None
@@ -73,6 +73,11 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
     deer_in_view = False
     fps_ema = None
     lost_frames = 0  # for grace period handling
+    frame_count = 0
+    
+    # --- Coordinate smoothing buffer ---
+    coord_buffer = []  # rolling window of (cx, cy) tuples
+    COORD_BUFFER_SIZE = 3  # average over 3 frames
 
     # ===============================
     #            MAIN LOOP
@@ -89,20 +94,36 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
             results = model.track(
                 frame,
                 persist=True,
-                tracker="botsort.yaml",
-                conf=0.40,
-                iou=0.50,
+                tracker="bytetrack.yaml",
+                conf=0.25,
                 classes=[0]
             )
+
         except Exception as e:
             time.sleep(0.05)
             continue
+
+        frame_count += 1
+        
+        # Reset tracker state every 30 seconds to prevent bloat
+        if frame_count % 300 == 0:
+            try:
+                if hasattr(model.predictor, 'trackers') and len(model.predictor.trackers) > 0:
+                    model.predictor.trackers[0].reset()
+                    print("[YOLO] Tracker state reset")
+            except Exception:
+                pass
+        
+        # Flush serial input buffer periodically
+        if ser and frame_count % 50 == 0:
+            ser.reset_input_buffer()
+
         
         if not results or results[0] is None:
             time.sleep(0.01)
             continue
 
-        annotated = results[0].plot(boxes=True, masks=False)
+        annotated = results[0].plot(boxes=True, masks=True, conf=True)
         boxes = results[0].boxes
 
         # ======================================================
@@ -139,6 +160,7 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
                         if ser:
                             try:
                                 ser.write(b"Deer detected\n")
+                                #print(f"[YOLO] Deer detected, locked ID {current_id}")
                             except Exception:
                                 pass
                 else:
@@ -172,9 +194,19 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
 
                             cv2.circle(annotated, (cx, cy), 5, (0, 255, 0), -1)
 
+                            # --- Add to coordinate buffer and smooth ---
+                            coord_buffer.append((cx, cy))
+                            if len(coord_buffer) > COORD_BUFFER_SIZE:
+                                coord_buffer.pop(0)
+                            
+                            # Average coordinates
+                            avg_cx = sum(c[0] for c in coord_buffer) // len(coord_buffer)
+                            avg_cy = sum(c[1] for c in coord_buffer) // len(coord_buffer)
+
                             if ser:
                                 try:
-                                    ser.write(f"{cx},{cy}\n".encode())
+                                    ser.write(f"{avg_cx},{avg_cy}\n".encode())
+                                    #print(f"[YOLO] Sent coords: {avg_cx},{avg_cy}")
                                 except Exception:
                                     pass
                         # we break even if conf < TRACK_CONF because this is the correct ID
@@ -187,8 +219,10 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
                         if ser:
                             try:
                                 ser.write(b"No deer\n")
+                                #print("[YOLO] Deer lost")
                             except Exception:
                                 pass
+                        coord_buffer.clear()  # reset smoothing buffer
                     
                     lost_frames += 1
 
@@ -205,10 +239,10 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
                         if not has_boxes:
                             cv2.circle(annotated, (cx, cy), 5, (0, 255, 0), -1)
 
-
                         if ser:
                             try:
                                 ser.write(f"{cx},{cy}\n".encode())
+                                #print(f"[YOLO] Sent buffered coords: {cx},{cy}")
                             except Exception:
                                 pass
                     else:
@@ -219,9 +253,11 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
                             lost_frames = 0
                             last_box = None
                             id_counts.clear()
+                            coord_buffer.clear()
                             if ser:
                                 try:
                                     ser.write(b"No deer\n")
+                                    #print("[YOLO] Deer lost")
                                 except Exception:
                                     pass
 
@@ -247,6 +283,7 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
                     if ser:
                         try:
                             ser.write(f"{cx},{cy}\n".encode())
+                            #print(f"[YOLO] Sent buffered coords: {cx},{cy}")
                         except Exception:
                             pass
                 else:
@@ -257,17 +294,26 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
                         lost_frames = 0
                         last_box = None
                         id_counts.clear()
+                        coord_buffer.clear()
                         if ser:
                             try:
                                 ser.write(b"No deer\n")
+                                #print("[YOLO] Deer lost")
                             except Exception:
                                 pass
 
         # ======================================================
-        #                    FPS DISPLAY
+        #                    FPS LIMITING
         # ======================================================
-        elapsed = time.time() - start
-        fps_inst = 1.0 / elapsed if elapsed > 0 else TARGET_FPS
+        sleep_time = FRAME_INTERVAL - (time.time() - start)
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+
+        # ======================================================
+        #                    FPS DISPLAY & JPEG COMPRESS
+        # ======================================================
+        total_elapsed = time.time() - start
+        fps_inst = 1.0 / total_elapsed if total_elapsed > 0 else TARGET_FPS
         fps_ema = fps_inst if fps_ema is None else (0.2 * fps_inst + 0.8 * fps_ema)
 
         cv2.putText(
@@ -280,14 +326,11 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
             1
         )
 
-        # ======================================================
-        #                    JPEG COMPRESS
-        # ======================================================
+        # Encode with FPS overlay
         ok, buffer = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
         if ok:
             jpeg = buffer.tobytes()
 
-            # Keep queue fresh (no backlog)
             if jpeg_queue.full():
                 try:
                     jpeg_queue.get_nowait()
@@ -298,13 +341,6 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
                 jpeg_queue.put_nowait(jpeg)
             except Exception:
                 pass
-
-        # ======================================================
-        #                    FPS LIMITING
-        # ======================================================
-        sleep_time = FRAME_INTERVAL - (time.time() - start)
-        if sleep_time > 0:
-            time.sleep(sleep_time)
 
     # ===============================
     # CLEAN EXIT FOR WORKER
@@ -363,4 +399,4 @@ atexit.register(cleanup)
 
 print("[MAIN] YOLO worker started.")
 print("[MAIN] Run with:")
-#print("uvicorn sentry_multiprocess:app --host 0.0.0.0 --port 5000 --no-access-log")
+# uvicorn sentry_multiprocess:app --host 0.0.0.0 --port 5000 --no-access-log

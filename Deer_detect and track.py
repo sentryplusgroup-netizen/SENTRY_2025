@@ -3,15 +3,12 @@ from ultralytics import YOLO
 import time
 import threading
 import queue
-from ultralytics.utils import LOGGER
-import logging
-LOGGER.setLevel(logging.CRITICAL)
 
 # --- Frame queue to prevent lag ---
-frame_queue = queue.Queue(maxsize=2)  # Keep only latest 2 frames
+frame_queue = queue.Queue(maxsize=1)  # Keep only latest 2 frames
 
 # --- Load your YOLO model ---
-model = YOLO("Sentry_finModel_1_ncnn_model", task="detect")  # replace with your trained model path
+model = YOLO("Sentrymodel_seg1_ncnn_model", task="detect")  # replace with your trained model path
 model.overrides['half'] = True  # use FP16 for faster inference
 
 # --- Open USB camera (explicit device path) ---
@@ -19,11 +16,11 @@ cap = cv2.VideoCapture("/dev/video0")
 
 # If your camera supports MJPEG (most USB cams do), enable it for higher FPS
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 # --- Tracking configuration (same as Segmentation test) ---
-DETECT_CONF = 0.80   # High accuracy required to START tracking
+DETECT_CONF = 0.35   # High accuracy required to START tracking
 TRACK_CONF  = 0.35   # Minimum confidence once tracking begins
 LOCK_STABLE_FRAMES = 7 # Number of consecutive frames to confirm stable target
 current_target_id = None
@@ -64,7 +61,7 @@ def yolo_loop():
 
         # --- Run YOLO tracking ---
         try:
-            results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=0.40, iou=0.30, classes=[0])
+            results = model.track(frame, persist=True, tracker='bytetrack.yaml', conf=0.30, iou=0.30, classes=[0])
         except Exception as e:
             time.sleep(0.05)
             continue

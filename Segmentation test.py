@@ -18,8 +18,8 @@ cap = cv2.VideoCapture("/dev/video0")
 
 # If your camera supports MJPEG (most USB cams do), enable it for higher FPS
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 640)
 cap.set(cv2.CAP_PROP_FPS, 12)
 
 # Initialize serial connection to Arduino
