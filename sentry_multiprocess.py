@@ -394,7 +394,6 @@ def cleanup():
         yolo_process.terminate()
         yolo_process.join()
 
-
 atexit.register(cleanup)
 
 print("[MAIN] YOLO worker started.")
