@@ -23,7 +23,7 @@ FRAME_INTERVAL = 1.0 / TARGET_FPS
 
 DETECT_CONF = 0.80
 TRACK_CONF = 0.30
-LOCK_STABLE_FRAMES = 5
+LOCK_STABLE_FRAMES = 4
 LOST_GRACE_FRAMES = 15  # how many consecutive "lost" frames we tolerate
 
 JPEG_QUEUE_MAXSIZE = 1
@@ -64,9 +64,9 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
 
     # ---- YOLO MODEL ----
     print("[YOLO] Loading model...")
-    model = YOLO("Sentry_finModel_1_ncnn_model", task="detect")  # replace with your trained model path
+    model = YOLO("Sentry_finModel_1_ncnn_model", task="segment")  # replace with your trained model path
     model.overrides['half'] = True  # use FP16 for faster inference
-    model.overrides["device"] = "cpu"
+    model.overrides["device"] = "cpu"# use GPU if available
 
     current_id = None
     id_counts = {}
@@ -77,7 +77,7 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
     
     # --- Coordinate smoothing buffer ---
     coord_buffer = []  # rolling window of (cx, cy) tuples
-    COORD_BUFFER_SIZE = 3  # average over 3 frames
+    COORD_BUFFER_SIZE = 2  # average over 2 frames
 
     # ===============================
     #            MAIN LOOP
@@ -214,16 +214,6 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
 
                 # --- If the current tracked ID was NOT found in this frame ---
                 if not found and deer_in_view:
-                    # Send immediate "No deer" on first loss
-                    if lost_frames == 0:
-                        if ser:
-                            try:
-                                ser.write(b"No deer\n")
-                                #print("[YOLO] Deer lost")
-                            except Exception:
-                                pass
-                        coord_buffer.clear()  # reset smoothing buffer
-                    
                     lost_frames += 1
 
                     # Use buffered box within grace period if it's still fresh
@@ -257,7 +247,7 @@ def yolo_worker(jpeg_queue: Queue, stop_event: Event):
                             if ser:
                                 try:
                                     ser.write(b"No deer\n")
-                                    #print("[YOLO] Deer lost")
+                                    #print("[YOLO] Deer lost after grace period")
                                 except Exception:
                                     pass
 
